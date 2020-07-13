@@ -96,7 +96,9 @@ namespace OnlyChain.Core {
             }
             int rows = paddingData.Length / restoreCount;
             var ec = new byte[ecCount * rows];
-            ErasureCoding.Encode(paddingData, ec, restoreCount, ecCount);
+            if (ecCount > 0) {
+                ErasureCoding.Encode(paddingData, ec, restoreCount, ecCount);
+            }
 
             var chipDatas = new byte[totalCount][];
             fixed (byte* @in = paddingData) {

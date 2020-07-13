@@ -2,6 +2,7 @@
 
 using OnlyChain.Core;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -27,6 +28,15 @@ namespace OnlyChain.Model {
                 } else if (tx.To == Address.Max) {
                     return new SuperPledgeData();
                 } else {
+                    if (tx.Data.Length >= 5 && tx.Data[0] is 0x0c) {
+                        uint prefix = BinaryPrimitives.ReadUInt32BigEndian(tx.Data.AsSpan(1, 4));
+                        switch (prefix) {
+                            case LockData.Prefix: {
+                                uint unlockTimestamp = BinaryPrimitives.ReadUInt32LittleEndian(tx.Data.AsSpan(5, 4));
+                                return new LockData(unlockTimestamp);
+                            }
+                        }
+                    }
                     return null;
                 }
             } catch { }

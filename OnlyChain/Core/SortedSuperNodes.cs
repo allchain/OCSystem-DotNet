@@ -17,8 +17,8 @@ namespace OnlyChain.Core {
 
             unsafe public int Compare([AllowNull] Address x, [AllowNull] Address y) {
                 if (x == y) return 0;
-                ref readonly UserStatus xValue = ref source.mpt.TryGetValue(x);
-                ref readonly UserStatus yValue = ref source.mpt.TryGetValue(y);
+                ref readonly UserState xValue = ref source.mpt.TryGetValue(x);
+                ref readonly UserState yValue = ref source.mpt.TryGetValue(y);
                 if (xValue.IsNull() & yValue.IsNull()) return x.CompareTo(y);
                 if (xValue.IsNull()) return 1;
                 if (yValue.IsNull()) return -1;
@@ -29,15 +29,15 @@ namespace OnlyChain.Core {
             }
         }
 
-        private MerklePatriciaTree<Address, UserStatus, Hash<Size256>> mpt; // 用于获得得票数，排序依据
+        private MerklePatriciaTree<Address, UserState, Hash<Size256>> mpt; // 用于获得得票数，排序依据
         private ImmutableSortedSet<Address> sortedAddresses;
 
-        public SortedSuperNodes(MerklePatriciaTree<Address, UserStatus, Hash<Size256>> mpt, IEnumerable<Address> superAddresses) {
+        public SortedSuperNodes(MerklePatriciaTree<Address, UserState, Hash<Size256>> mpt, IEnumerable<Address> superAddresses) {
             this.mpt = mpt;
             sortedAddresses = ImmutableSortedSet<Address>.Empty.WithComparer(new Comparer(this)).Intersect(superAddresses);
         }
 
-        public void Update(MerklePatriciaTree<Address, UserStatus, Hash<Size256>> mpt, IEnumerable<Address> changedAddresses) {
+        public void Update(MerklePatriciaTree<Address, UserState, Hash<Size256>> mpt, IEnumerable<Address> changedAddresses) {
             var builder = sortedAddresses.ToBuilder();
             builder.ExceptWith(changedAddresses);
             this.mpt = mpt;

@@ -3,9 +3,8 @@ using System.Collections.Generic;
 using System.Text;
 
 namespace OnlyChain.Core {
-    public struct PledgeStatus {
+    public struct LockStatus {
         public Coin Value;
-        public uint Timestamp;
-        public uint Duration;
+        public uint UnlockTimestamp;
     }
 }

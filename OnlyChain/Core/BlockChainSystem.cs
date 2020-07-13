@@ -34,24 +34,18 @@ namespace OnlyChain.Core {
 
         private readonly IClient client;
 
-        private readonly LevelDB immutableDatabase;
-        private readonly UserDictionary userDatabse;
+        private readonly LevelDB immutableDatabase; 
+        private readonly UserDictionary userDatabse; // 用户字典
         private readonly Hashes<Hash<Size256>> blockHashes; // 所有区块的hash以及本地索引
         private readonly IndexedQueue<Block> cacheBlocks = new IndexedQueue<Block>(CacheHeight); // 缓存最近的区块
-
-        private readonly List<Address> tempCampaignNodes = new List<Address>(); // 本轮临时新增的竞选节点
-        private readonly Address[] sortedCampaignNodes = Array.Empty<Address>(); // 已确认的竞选排名
-
-        private readonly Address[] blockProducers = new Address[Constants.MinProducerCount]; // 按得票排序的生产者
 
         private readonly CancellationTokenSource cancellationTokenSource = new CancellationTokenSource();
         private readonly Channel<Block> blockChannel = Channel.CreateUnbounded<Block>(new UnboundedChannelOptions { SingleReader = true });
 
         public string ChainName { get; }
-        public uint MaxHeight { get; private set; } = 0;
 
-        public Block LastBlock { get; private set; }
-        public SortedList<Address, SuperNode?> ImmutableCampaignNodes { get; private set; } = new SortedList<Address, SuperNode?>(); // 所有竞选节点与IP端口(TCP)，按得票数排序
+        public Block LastBlock { get; private set; } = null!;
+        public Dictionary<Address, SuperNode?> CampaignNodes { get; private set; } = new Dictionary<Address, SuperNode?>(); // 所有竞选节点与IP端口(TCP)
 
         public event EventHandler<CampaignNodesChangedEventArgs>? CampaignNodesChanged;
         public event EventHandler<SystemStateTransferredEventArgs>? StateTransferred;
@@ -73,8 +67,9 @@ namespace OnlyChain.Core {
             userDatabse = new UserDictionary(Path.Combine(chainName, "block_chain.users"));
             blockHashes = new Hashes<Hash<Size256>>(Path.Combine(chainName, "block_chain.hash"));
 
-            LastBlock = Block.GenesisBlock;
             // TODO: 更新创世区块状态
+
+            CommitBlock(Block.GenesisBlock);
 
             _ = Task.Run(LoopReadBlock);
         }
@@ -91,7 +86,6 @@ namespace OnlyChain.Core {
         /// 添加一个新的区块到区块链
         /// </summary>
         /// <param name="block"></param>
-        /// <param name="verify">是否验证区块（自己生产的区块不验证）</param>
         private void Put(Block block) {
             try {
                 // 添加一个新的高度的区块
@@ -109,7 +103,7 @@ namespace OnlyChain.Core {
 
         private void ExecuteGenesisBlock(Block block) {
             block.PrecommitState = new BlockState {
-                WorldState = new MerklePatriciaTree<Address, UserStatus, Hash<Size256>>(1),
+                WorldState = new MerklePatriciaTree<Address, UserState, Hash<Size256>>(1),
                 Transactions = new MerklePatriciaTree<Hash<Size256>, TransactionResult, Hash<Size256>>(0),
 
             };
@@ -140,6 +134,7 @@ namespace OnlyChain.Core {
             }));
 
             // TODO: 验证出块时间
+
 
             // 并行验证交易签名
             int taskCount = Math.Max(Environment.ProcessorCount - 2, 1);
@@ -181,11 +176,11 @@ namespace OnlyChain.Core {
                 txMPT.ComputeHash(TransactionHashAlgorithm.Instance);
                 if (block.HashTxMerkleRoot != txMPT.RootHash) throw new InvalidBlockException();
 
-                // TODO: 出块奖励，设置世界MPT
-
+                // 出块奖励，设置世界MPT
+                ProduceBlockReward(block);
 
                 // 验证世界状态
-                block.PrecommitState.WorldState.ComputeHash(UserStatusHashAlgorithm.Instance);
+                block.PrecommitState.WorldState.ComputeHash(UserStateHashAlgorithm.Instance);
                 if (block.HashWorldState != block.PrecommitState.WorldState.RootHash) throw new InvalidBlockException();
 
                 // 等待所有交易签名验证完成
@@ -196,101 +191,128 @@ namespace OnlyChain.Core {
             }
         }
 
+        /// <summary>
+        /// TODO: 出块奖励
+        /// </summary>
+        /// <param name="block"></param>
+        internal void ProduceBlockReward(Block block) {
+
+        }
+
         /// <remarks>
         /// <para>1、检查交易合法性</para>
-        /// <para>2、执行交易（更新<paramref name="status"/>）</para>
+        /// <para>2、执行交易（更新<see cref="Block.PrecommitState"/>）</para>
         /// </remarks>
         /// <param name="block">一个未检查执行过的区块</param>
-        /// <param name="status"></param>
         /// <param name="tx"></param>
-        private void ExecuteTransaction(Block block, Transaction tx) {
+        internal void ExecuteTransaction(Block block, Transaction tx) {
             try {
+                Debug.Assert(block.PrecommitState is { });
+
                 if ((ulong)tx.GasPrice is 0) goto Invalid; // 手续费不能为0
                 if (tx.GasLimit < tx.BaseGasUsed) goto Invalid; // GasLimit比最低汽油费还低
 
-                var mpt = block.PrecommitState!.WorldState;
-                UserStatus fromStatus = mpt[tx.From];
-                if (fromStatus.NextNonce != tx.Nonce) goto Invalid; // nonce不正确
+                var mpt = block.PrecommitState.WorldState;
+                UserState fromState = mpt[tx.From];
+                if (fromState.NextNonce != tx.Nonce) goto Invalid; // nonce不正确
                 ulong minFee = checked(tx.BaseGasUsed * tx.GasPrice); // 最低手续费
-                if (fromStatus.Balance < minFee) goto Invalid; // 不足以支付最低手续费
 
-                UserStatus producerStatus = mpt[block.ProducerAddress]; // 生产者已验证
-                fromStatus.Balance -= minFee; // 扣除最低手续费
-                producerStatus.Balance += minFee;
-
-                UserStatus rollbackFromStatus = fromStatus; // 保存当前状态，交易执行失败时回滚
-                void Fail(TransactionErrorCode errorCode) {
-                    mpt[block.ProducerAddress] = producerStatus;
-                    SetFromStatus(rollbackFromStatus);
-                    throw new ExecuteTransactionException((uint)errorCode);
-                }
-
-                void SetFromStatus(in UserStatus status) {
-                    bool remove = (ulong)status.Balance is 0
-                        && (ulong)status.VotePledge is 0
-                        && (ulong)status.SuperPledge is 0
-                        && status.Votes is 0;
-                    if (remove) {
-                        mpt.Remove(tx.From);
-                    } else {
-                        mpt[tx.From] = status;
+                if (fromState.Locks is { }) {
+                    int unlockCount = 0;
+                    foreach (var @lock in fromState.Locks) {
+                        if (block.Timestamp < @lock.UnlockTimestamp) break; // fromStatus.Locks是排序的，因此可以直接跳出循环
+                        fromState.Balance += @lock.Value;
+                        unlockCount++;
+                    }
+                    if (unlockCount > 0) {
+                        if (unlockCount != fromState.Locks.Length) {
+                            fromState.Locks = fromState.Locks[unlockCount..];
+                        } else {
+                            fromState.Locks = null;
+                        }
                     }
                 }
 
-                if (fromStatus.Balance < tx.Value) Fail(TransactionErrorCode.InsufficientBalance); // 余额不足，但足够支付手续费
-                fromStatus.Balance -= tx.Value;
-                fromStatus.NextNonce++;
+                if (fromState.Balance < minFee) goto Invalid; // 不足以支付最低手续费
+
+                UserState producerState = mpt[block.ProducerAddress];
+                fromState.Balance -= minFee; // 扣除最低手续费
+                producerState.Balance += minFee;
+
+                UserState rollbackFromStatus = fromState; // 保存当前状态，交易执行失败时回滚
+                void Fail(TransactionErrorCode errorCode) {
+                    mpt[block.ProducerAddress] = producerState;
+                    SetFromState(rollbackFromStatus);
+                    throw new ExecuteTransactionException((uint)errorCode);
+                }
+
+                void SetFromState(in UserState state) {
+                    bool remove = (ulong)state.Balance is 0
+                        && (ulong)state.VotePledge is 0
+                        && (ulong)state.SuperPledge is 0
+                        && state.Votes is 0;
+                    if (remove) {
+                        mpt.Remove(tx.From);
+                    } else {
+                        mpt[tx.From] = state;
+                    }
+                }
+
+                if (fromState.Balance < tx.Value) Fail(TransactionErrorCode.InsufficientBalance); // 余额不足，但足够支付手续费
+                fromState.Balance -= tx.Value;
+                fromState.NextNonce++;
 
                 switch (tx.AttachData) {
-                    case null: // 普通交易
-                        if (mpt.TryGetValue(tx.To, out UserStatus toStatus)) {
-                            toStatus.Balance += tx.Value;
-                            mpt[tx.To] = toStatus;
+                    case null: { // 普通交易
+                        if (mpt.TryGetValue(tx.To, out UserState toState)) {
+                            toState.Balance += tx.Value;
+                            mpt[tx.To] = toState;
                         } else {
-                            mpt[tx.To] = new UserStatus { Balance = tx.Value };
+                            mpt[tx.To] = new UserState { Balance = tx.Value };
                         }
                         break;
+                    }
                     case SuperPledgeData _: // 超级节点质押，本轮结束其他账户才能对自己投票
-                        if ((ulong)fromStatus.SuperPledge is 0 && tx.Value < Constants.MinSuperPledgeCoin) Fail(TransactionErrorCode.PledgeTooLow); // 质押金额太小
-                        if (fromStatus.SuperPledge >= Constants.MinSuperPledgeCoin && tx.Value < Constants.MinSuperPledgeIncrement) Fail(TransactionErrorCode.PledgeTooLow); // 质押金额太小
-                        fromStatus.SuperPledge += tx.Value;
-                        fromStatus.SuperPledgeTimestamp = block.Timestamp;
+                        if ((ulong)fromState.SuperPledge is 0 && tx.Value < Constants.MinSuperPledgeCoin) Fail(TransactionErrorCode.PledgeTooLow); // 质押金额太小
+                        if (fromState.SuperPledge >= Constants.MinSuperPledgeCoin && tx.Value < Constants.MinSuperPledgeIncrement) Fail(TransactionErrorCode.PledgeTooLow); // 质押金额太小
+                        fromState.SuperPledge += tx.Value;
+                        fromState.SuperPledgeTimestamp = block.Timestamp;
                         block.PrecommitState.TempCampaignNodes.Add(tx.From);
                         break;
                     case SuperRedemptionData _: // 超级节点赎回
                         if ((ulong)tx.Value != 0) Fail(TransactionErrorCode.ValueNotEqualToZero); // Value不为0
-                        if (fromStatus.SuperPledge < Constants.MinSuperPledgeCoin) Fail(TransactionErrorCode.Unpledged); // 从未质押过
-                        if (block.Timestamp - fromStatus.SuperPledgeTimestamp < Constants.YearSeconds) Fail(TransactionErrorCode.NotExpired); // 未到赎回期
-                        fromStatus.Balance += fromStatus.SuperPledge;
-                        fromStatus.SuperPledge = 0;
-                        fromStatus.SuperPledgeTimestamp = 0;
+                        if (fromState.SuperPledge < Constants.MinSuperPledgeCoin) Fail(TransactionErrorCode.Unpledged); // 从未质押过
+                        if (block.Timestamp - fromState.SuperPledgeTimestamp < Constants.YearSeconds) Fail(TransactionErrorCode.NotExpired); // 未到赎回期
+                        fromState.Balance += fromState.SuperPledge;
+                        fromState.SuperPledge = 0;
+                        fromState.SuperPledgeTimestamp = 0;
                         break;
                     case VoteData vote: // 投票
-                        if (vote.Round != block.Round) goto Invalid;
+                        if (vote.Round != block.BigRound.Rounds) goto Invalid;
                         if (tx.Value < Constants.MinVotePledgeCoin) Fail(TransactionErrorCode.VoteTooLow);
                         if (vote.Addresses.Length != new HashSet<Address>(vote.Addresses).Count) Fail(TransactionErrorCode.DuplicateAddress); // 地址重复
 
-                        var changedStatus = new Dictionary<Address, UserStatus>(60);
+                        var changedStatus = new Dictionary<Address, UserState>(60);
 
-                        if (fromStatus.VoteAddresses is { }) {
-                            foreach (var addr in fromStatus.VoteAddresses) {
-                                UserStatus campaignStatus = mpt[addr];
-                                campaignStatus.Votes -= fromStatus.VotePledge;
+                        if (fromState.VoteAddresses is { }) {
+                            foreach (var addr in fromState.VoteAddresses) {
+                                UserState campaignStatus = mpt[addr];
+                                campaignStatus.Votes -= fromState.VotePledge;
                                 changedStatus[addr] = campaignStatus;
                             }
                         }
 
-                        fromStatus.VotePledge += tx.Value;
-                        fromStatus.VoteAddresses = vote.Addresses;
-                        fromStatus.VotePledgeTimestamp = block.Timestamp;
+                        fromState.VotePledge += tx.Value;
+                        fromState.VoteAddresses = vote.Addresses;
+                        fromState.VotePledgeTimestamp = block.Timestamp;
 
                         foreach (Address addr in vote.Addresses) {
                             int index = Array.BinarySearch(block.PrecommitState.SortedCampaignNodes, addr, block.PrecommitState.CampaignComparer);
                             if (index < 0) Fail(TransactionErrorCode.Unpledged); // 投给非竞选节点
-                            if (mpt.TryGetValue(addr, out UserStatus campaignStatus) is false) Fail(TransactionErrorCode.Unpledged);
+                            if (mpt.TryGetValue(addr, out UserState campaignStatus) is false) Fail(TransactionErrorCode.Unpledged);
                             if (IsCampaignNode(block, in campaignStatus)) Fail(TransactionErrorCode.Unpledged);
-                            if (changedStatus.TryGetValue(addr, out UserStatus tempStatus)) campaignStatus = tempStatus;
-                            campaignStatus.Votes += fromStatus.VotePledge;
+                            if (changedStatus.TryGetValue(addr, out UserState tempStatus)) campaignStatus = tempStatus;
+                            campaignStatus.Votes += fromState.VotePledge;
                             changedStatus[addr] = campaignStatus;
                         }
 
@@ -298,25 +320,48 @@ namespace OnlyChain.Core {
                         break;
                     case VoteRedemptionData _: // 投票质押赎回
                         if ((ulong)tx.Value != 0) Fail(TransactionErrorCode.ValueNotEqualToZero); // Value不为0
-                        if (fromStatus.VoteAddresses is null) Fail(TransactionErrorCode.Unpledged); // 从未质押过
-                        if (block.Timestamp - fromStatus.VotePledgeTimestamp < Constants.VotePledgeSeconds) Fail(TransactionErrorCode.NotExpired);
+                        if (fromState.VoteAddresses is null) Fail(TransactionErrorCode.Unpledged); // 从未质押过
+                        if (block.Timestamp - fromState.VotePledgeTimestamp < Constants.VotePledgeSeconds) Fail(TransactionErrorCode.NotExpired);
 
-                        for (int i = 0; i < fromStatus.VoteAddresses!.Length; i++) {
-                            Address addr = fromStatus.VoteAddresses[i];
-                            UserStatus campaignStatus = mpt[addr];
-                            campaignStatus.Votes -= fromStatus.VotePledge;
+                        for (int i = 0; i < fromState.VoteAddresses!.Length; i++) {
+                            Address addr = fromState.VoteAddresses[i];
+                            UserState campaignStatus = mpt[addr];
+                            campaignStatus.Votes -= fromState.VotePledge;
                             mpt[addr] = campaignStatus;
                         }
 
-                        fromStatus.Balance += fromStatus.VotePledge;
-                        fromStatus.VoteAddresses = null;
-                        fromStatus.VotePledge = 0;
-                        fromStatus.VotePledgeTimestamp = 0;
+                        fromState.Balance += fromState.VotePledge;
+                        fromState.VoteAddresses = null;
+                        fromState.VotePledge = 0;
+                        fromState.VotePledgeTimestamp = 0;
                         break;
+                    case LockData lockData: { // 锁仓
+                        if (lockData.UnlockTimestamp <= block.Timestamp) goto case null; // 区块时间戳已过了解锁时间戳
+
+                        var lockStatus = new LockStatus { Value = tx.Value, UnlockTimestamp = lockData.UnlockTimestamp };
+                        if (mpt.TryGetValue(tx.To, out UserState toState)) {
+                            var locks = toState.Locks ?? Array.Empty<LockStatus>();
+                            var newLocks = new LockStatus[locks.Length + 1];
+                            int insertIndex = Array.FindIndex(locks, o => o.UnlockTimestamp >= lockData.UnlockTimestamp);
+                            if (insertIndex < 0) {
+                                locks.CopyTo(newLocks, 0);
+                                newLocks[^1] = lockStatus;
+                            } else {
+                                locks.AsSpan(0, insertIndex).CopyTo(newLocks);
+                                newLocks[insertIndex] = lockStatus;
+                                locks.AsSpan(insertIndex).CopyTo(newLocks.AsSpan(insertIndex + 1));
+                            }
+                            toState.Locks = newLocks;
+                            mpt[tx.To] = toState;
+                        } else {
+                            mpt[tx.To] = new UserState { Locks = new[] { lockStatus } };
+                        }
+                        break;
+                    }
                 }
 
-                mpt[block.ProducerAddress] = producerStatus;
-                SetFromStatus(fromStatus);
+                mpt[block.ProducerAddress] = producerState;
+                SetFromState(fromState);
                 return;
             } catch { /*Invalid*/ }
         Invalid:
@@ -330,7 +375,8 @@ namespace OnlyChain.Core {
         /// <param name="address"></param>
         /// <returns></returns>
         public bool IsProducer(Address address) {
-            int rank = ImmutableCampaignNodes.IndexOfKey(address);
+            var state = LastBlock.CommitState!;
+            int rank = Array.BinarySearch(state.SortedCampaignNodes, address, state.CampaignComparer);
             return 0 <= rank && rank < Constants.MinProducerCount;
         }
 
@@ -340,7 +386,7 @@ namespace OnlyChain.Core {
         /// <param name="block"></param>
         /// <param name="status"></param>
         /// <returns></returns>
-        private static bool IsCampaignNode(Block block, in UserStatus status) {
+        private static bool IsCampaignNode(Block block, in UserState status) {
             if (status.SuperPledge < Constants.MinSuperPledgeCoin) return false;
             if (block.Timestamp - status.SuperPledgeTimestamp >= Constants.YearSeconds) return false;
             return true;
@@ -348,6 +394,35 @@ namespace OnlyChain.Core {
 
         private PublicKey GetProducerPublicKey(Block block) {
             return userDatabse[block.ProducerAddress];
+        }
+
+        internal void CommitBlock(Block block) {
+            Debug.Assert(block.PrecommitState is { });
+            Debug.Assert(block.CommitState is null);
+
+            block.CommitState = block.PrecommitState;
+            block.PrecommitState = null;
+
+            foreach (var tx in block.Transactions) {
+                userDatabse.Set(tx.From, tx.PublicKey);
+            }
+
+            if (LastBlock.BigRound.Rounds != block.BigRound.Rounds) {
+                var newCampaignNodes = new Dictionary<Address, SuperNode?>();
+                foreach (var addr in block.CommitState.SortedCampaignNodes) newCampaignNodes.Add(addr, null);
+
+                foreach (var (oldAddress, oldNode) in CampaignNodes) {
+                    if (newCampaignNodes.ContainsKey(oldAddress)) {
+                        newCampaignNodes[oldAddress] = oldNode;
+                    } else {
+                        oldNode?.Dispose();
+                    }
+                }
+
+                CampaignNodes = newCampaignNodes; // 更新竞选节点信息
+            }
+
+            LastBlock = block;
         }
 
         /// <summary>
@@ -371,74 +446,66 @@ namespace OnlyChain.Core {
 
         }
 
-        ///// <summary>
-        ///// 新的不可逆区块
-        ///// </summary>
-        ///// <param name="block"></param>
-        //private void Immutable(Block block) {
-        //    if (ImmutableLastBlock.Round != block.Round) {
-        //        var newCampaignNodes = new SortedList<Address, SuperNode?>(block.CampaignComparer);
-        //        foreach (var addr in block.SortedCampaignNodes) newCampaignNodes.Add(addr, null);
-
-        //        foreach (var (oldAddress, oldNode) in ImmutableCampaignNodes) {
-        //            if (newCampaignNodes.ContainsKey(oldAddress)) {
-        //                newCampaignNodes[oldAddress] = oldNode;
-        //            } else {
-        //                oldNode?.Dispose();
-        //            }
-        //        }
-
-        //        ImmutableCampaignNodes = newCampaignNodes; // 更新竞选排名列表
-        //    }
-
-        //    ImmutableLastBlock = block;
-        //}
-
         unsafe private Block? ReadBlockFromDatabase(Hash<Size256> key) {
             byte[]? blockByteData = immutableDatabase.Get(new ReadOnlySpan<byte>(&key, sizeof(Hash<Size256>)));
             if (blockByteData is null) return null;
-
-            // TODO: 从blockByteData构建Block
-            return null;
+            return new Block(blockByteData, hasTx: true);
         }
 
         /// <summary>
-        /// 统计票数并排名
+        /// 尝试统计票数并排名
         /// </summary>
         /// <param name="block"></param>
-        private void TryStatisticsCampaignNodes(Block block) {
-            if (LastBlock.Round == block.Round) return;
-            Debug.Assert(LastBlock.CommitState is { });
+        internal void TryStatisticsCampaignNodes(Block block) {
+            if (LastBlock.BigRound.Rounds == block.BigRound.Rounds) return;
+            
             Debug.Assert(block.PrecommitState is { });
 
-            block.PrecommitState.CampaignComparer = new CampaignComparer(LastBlock.CommitState.WorldState);
-            Address[] allCampaignNodes = block.PrecommitState.SortedCampaignNodes.Concat(block.PrecommitState.TempCampaignNodes).Distinct().ToArray();
-            Array.Sort(allCampaignNodes, block.PrecommitState.CampaignComparer);
+            BlockState result = StatisticsCampaignNodes(block.PrecommitState);
+            block.PrecommitState.CampaignComparer = result.CampaignComparer;
+            block.PrecommitState.SortedCampaignNodes = result.SortedCampaignNodes;
+            block.PrecommitState.TempCampaignNodes = result.TempCampaignNodes;
+        }
+
+        internal static BlockState StatisticsCampaignNodes(BlockState currentState) {
+            var campaignComparer = new CampaignComparer(currentState.WorldState);
+            Address[] allCampaignNodes = currentState.SortedCampaignNodes.Concat(currentState.TempCampaignNodes).Distinct().ToArray();
+            Array.Sort(allCampaignNodes, campaignComparer);
+
             int removeCount = 0;
             for (int i = 0; i < allCampaignNodes.Length; i++) {
                 ref readonly Address addr = ref allCampaignNodes[^(i + 1)];
-                ref readonly UserStatus status = ref LastBlock.CommitState.WorldState.TryGetValue(addr);
+                ref readonly UserState status = ref currentState.WorldState.TryGetValue(addr);
                 if (status.IsNull() || (ulong)status.SuperPledge is 0) {
                     removeCount++;
                 } else {
                     break;
                 }
             }
+
+            var result = new BlockState {
+                WorldState = null!,
+                Transactions = null!,
+                CampaignComparer = campaignComparer,
+            };
             if (removeCount != 0) {
-                block.PrecommitState.SortedCampaignNodes = allCampaignNodes[..^removeCount];
+                result.SortedCampaignNodes = allCampaignNodes[..^removeCount];
             } else {
-                block.PrecommitState.SortedCampaignNodes = allCampaignNodes;
+                result.SortedCampaignNodes = allCampaignNodes;
             }
-            block.PrecommitState.TempCampaignNodes = new List<Address>();
+            result.TempCampaignNodes = new List<Address>();
+            return result;
         }
 
         private bool disposedValue = false;
 
         void Dispose(bool disposing) {
             if (!disposedValue) {
+                blockChannel.Writer.TryComplete();
                 if (disposing) {
                     immutableDatabase.Dispose();
                     blockHashes.Dispose();
+                    userDatabse.Dispose();
                 }
                 disposedValue = true;
             }
@@ -450,22 +517,20 @@ namespace OnlyChain.Core {
             => blockHashes.ContainsKey(key);
 
         public bool TryGetValue(Hash<Size256> key, [MaybeNullWhen(false)] out Block value) {
-            // TODO: 尝试从内存中读取区块
-
             value = ReadBlockFromDatabase(key);
             return value is { };
         }
 
 
         sealed class CampaignComparer : IComparer<Address> {
-            private readonly MerklePatriciaTree<Address, UserStatus, Hash<Size256>> mpt;
+            private readonly MerklePatriciaTree<Address, UserState, Hash<Size256>> mpt;
 
-            public CampaignComparer(MerklePatriciaTree<Address, UserStatus, Hash<Size256>> mpt) => this.mpt = mpt;
+            public CampaignComparer(MerklePatriciaTree<Address, UserState, Hash<Size256>> mpt) => this.mpt = mpt;
 
             unsafe public int Compare(Address x, Address y) {
                 if (x == y) return 0;
-                ref readonly UserStatus xValue = ref mpt.TryGetValue(x);
-                ref readonly UserStatus yValue = ref mpt.TryGetValue(y);
+                ref readonly UserState xValue = ref mpt.TryGetValue(x);
+                ref readonly UserState yValue = ref mpt.TryGetValue(y);
                 if (xValue.IsNull() & yValue.IsNull()) return x.CompareTo(y);
                 if (xValue.IsNull()) return 1;
                 if (yValue.IsNull()) return -1;
@@ -480,12 +545,12 @@ namespace OnlyChain.Core {
             }
         }
 
-        unsafe sealed class UserStatusHashAlgorithm : MerklePatriciaTree<Address, UserStatus, Hash<Size256>>.IHashAlgorithm {
-            public static readonly MerklePatriciaTree<Address, UserStatus, Hash<Size256>>.IHashAlgorithm Instance = new UserStatusHashAlgorithm();
+        unsafe internal sealed class UserStateHashAlgorithm : MerklePatriciaTree<Address, UserState, Hash<Size256>>.IHashAlgorithm {
+            public static readonly MerklePatriciaTree<Address, UserState, Hash<Size256>>.IHashAlgorithm Instance = new UserStateHashAlgorithm();
 
-            private UserStatusHashAlgorithm() { }
+            private UserStateHashAlgorithm() { }
 
-            public Hash<Size256> ComputeHash(Address key, in UserStatus value) {
+            public Hash<Size256> ComputeHash(Address key, in UserState value) {
                 Span<byte> buffer = stackalloc byte[1024];
                 var serializer = new Serializer(buffer);
                 serializer.Write(Serializer.U64LittleEndian, value.Balance);
@@ -504,7 +569,7 @@ namespace OnlyChain.Core {
             }
         }
 
-        unsafe sealed class TransactionHashAlgorithm : MerklePatriciaTree<Hash<Size256>, TransactionResult, Hash<Size256>>.IHashAlgorithm {
+        unsafe internal sealed class TransactionHashAlgorithm : MerklePatriciaTree<Hash<Size256>, TransactionResult, Hash<Size256>>.IHashAlgorithm {
             public static readonly MerklePatriciaTree<Hash<Size256>, TransactionResult, Hash<Size256>>.IHashAlgorithm Instance = new TransactionHashAlgorithm();
 
             private TransactionHashAlgorithm() { }
@@ -517,32 +582,6 @@ namespace OnlyChain.Core {
 
             public Hash<Size256> ComputeHash(ReadOnlySpan<Hash<Size256>> hashes) {
                 return hashes.HashesHash();
-            }
-        }
-
-        sealed class StateMachine : IDisposable {
-            private readonly BlockChainSystem system;
-
-            public StateMachine(BlockChainSystem system) => this.system = system;
-
-            private bool isDisposed;
-
-            private void Dispose(bool disposing) {
-                if (!isDisposed) {
-                    if (disposing) {
-
-                    }
-                    isDisposed = true;
-                }
-            }
-
-            ~StateMachine() {
-                Dispose(disposing: false);
-            }
-
-            public void Dispose() {
-                Dispose(disposing: true);
-                GC.SuppressFinalize(this);
             }
         }
     }

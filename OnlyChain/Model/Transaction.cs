@@ -202,6 +202,7 @@ namespace OnlyChain.Model {
                 SuperPledgeData _ => $"超级节点质押: {Hash}",
                 SuperRedemptionData _ => $"超级节点赎回: {Hash}",
                 VoteData _ => $"投票: {Hash}",
+                LockData _ => $"锁仓交易: {Hash}",
                 _ => $"未知交易: {Hash}"
             };
         }

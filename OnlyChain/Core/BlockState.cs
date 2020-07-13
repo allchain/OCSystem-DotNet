@@ -9,7 +9,7 @@ namespace OnlyChain.Core {
         /// <summary>
         /// 世界MPT
         /// </summary>
-        public MerklePatriciaTree<Address, UserStatus, Hash<Size256>> WorldState { get; set; }
+        public MerklePatriciaTree<Address, UserState, Hash<Size256>> WorldState { get; set; }
         /// <summary>
         /// 交易MPT
         /// </summary>

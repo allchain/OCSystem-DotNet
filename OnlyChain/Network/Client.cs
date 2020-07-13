@@ -333,16 +333,16 @@ namespace OnlyChain.Network {
             var result = new TaskCompletionSource<Node?>();
 
             async Task Find(IPEndPoint remote, bool hasRemoteNode) {
-                var nodes = await FindNode(target, Nodes.K, remote, hasRemoteNode, refreshKBucket: false, cancellationTokenSource.Token);
+                var nodes = await FindNode(target, Nodes.K, remote, hasRemoteNode, refreshKBucket: false, cancellationTokenSource!.Token);
                 var lookupNodes = new List<Node>();
                 foreach (var node in nodes) {
                     if (cancellationTokenSource.IsCancellationRequested) return;
                     if (node.Address == target) {
                         cancellationTokenSource.Cancel();
-                        result.TrySetResult(node);
+                        result!.TrySetResult(node);
                         return;
                     }
-                    lock (addresses) {
+                    lock (addresses!) {
                         if (addresses.Count == nodePoolSize && (node.Address ^ target) >= (addresses.Max ^ target)) continue;
                         if (!addresses.Add(node.Address)) continue;
                         if (addresses.Count > nodePoolSize) addresses.Remove(addresses.Max);
@@ -367,7 +367,7 @@ namespace OnlyChain.Network {
             async Task Find(Node remoteNode) {
                 if (cancellationToken.IsCancellationRequested) return;
 
-                lock (addresses) {
+                lock (addresses!) {
                     if (addresses.Count == nodePoolSize && (remoteNode.Address ^ target) >= (addresses.Max ^ target)) return;
                     if (!addresses.Add(remoteNode.Address)) return;
                     if (addresses.Count > nodePoolSize) addresses.Remove(addresses.Max);
@@ -379,7 +379,7 @@ namespace OnlyChain.Network {
                         await Array.ConvertAll(nodes, node => Find(node)).WhenAll();
                         break;
                     case Node node:
-                        await result.Writer.WriteAsync(node, cancellationToken);
+                        await result!.Writer.WriteAsync(node, cancellationToken);
                         break;
                 }
             }

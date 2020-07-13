@@ -21,6 +21,12 @@ namespace OnlyChain.Core {
             Count = 0;
         }
 
+        /// <summary>
+        /// 无论如何入队都会成功。当有旧元素被移除时，返回true，否则返回false。
+        /// </summary>
+        /// <param name="value"></param>
+        /// <param name="oldValue"></param>
+        /// <returns></returns>
         public bool Enqueue(T value, [MaybeNullWhen(false)] out T oldValue) {
             bool result;
             if (Count < MaxCount) {

@@ -19,5 +19,9 @@ namespace OnlyChain {
         public readonly static int BlacklistTxCount = 10000;
         public readonly static uint RoundTimestamp = 126;
         public readonly static int MaxBlockBytes = 1048576;
+        public readonly static TimeSpan ProduceTimeOffset = TimeSpan.FromSeconds(1);
+        public readonly static int SmallRoundSeconds = 42;
+        public readonly static int BigRoundSeconds = 126;
+        public readonly static TimeSpan ProduceTimeSpan = TimeSpan.FromSeconds(2);
     }
 }

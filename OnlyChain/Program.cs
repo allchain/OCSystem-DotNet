@@ -142,9 +142,8 @@ namespace OnlyChain {
             var hashTree4 = hashTree.Combine(hashTree2).Combine(hashTree3);
         }
 
-        static readonly Hashes<Address> hashes = new Hashes<Address>("hash160.hashes");
-
         static void TestHashes() {
+            var hashes = new Hashes<Address>("hash160.hashes");
             var hashtable = new Hashtable();
             var keys = new Address[1000_0000];
             for (int i = 0; i < keys.Length; i++) keys[i] = Address.Random();
@@ -269,7 +268,7 @@ namespace OnlyChain {
         public static readonly HashSet<Address> AllAddresses = new HashSet<Address>();
 
         unsafe static void Main(string[] args) {
-            TestSecp256k1();
+            TestMPT();
             return;
             //TestHashes();
             //GC.Collect();

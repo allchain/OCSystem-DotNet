@@ -10,7 +10,7 @@ using System.Threading;
 
 namespace OnlyChain.Core {
     public sealed class TransactionPool {
-        // 按每个账户平均手续费排序
+        // 按每个账户平均GasPrice排序
 
         private readonly object locker = new object();
         private readonly Dictionary<Address, SortedSet<Transaction>> allTransactions = new Dictionary<Address, SortedSet<Transaction>>();
@@ -84,10 +84,10 @@ namespace OnlyChain.Core {
                 if (x == y) return 0;
                 double xVal = 0, yVal = 0;
                 if (map.TryGetValue(x, out var xList)) {
-                    xVal = xList.Average(tx => (long)(tx.BaseGasUsed * tx.GasPrice));
+                    xVal = xList.Average(tx => (long)tx.GasPrice);
                 }
                 if (map.TryGetValue(y, out var yList)) {
-                    yVal = yList.Average(tx => (long)(tx.BaseGasUsed * tx.GasPrice));
+                    yVal = yList.Average(tx => (long)tx.GasPrice);
                 }
                 return yVal.CompareTo(xVal);
             }

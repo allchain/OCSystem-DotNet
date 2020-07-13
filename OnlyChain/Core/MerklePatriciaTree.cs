@@ -654,7 +654,7 @@ namespace OnlyChain.Core {
 
                 public override Node? Remove(ref RemoveArgs args, byte* key) {
                     byte thisPrefix = *key, otherPrefix;
-                    ref var child = ref Unsafe.AsRef<Node>(null);
+                    ref Node child = ref Unsafe.AsRef<Node>(null);
                     Node otherChild;
                     if (prefix1 == thisPrefix) {
                         otherPrefix = prefix2;
@@ -882,7 +882,7 @@ namespace OnlyChain.Core {
                 }
 
                 public override IEnumerable<KeyValuePair<TKey, TValue>> Enumerate(int index, byte[] key) {
-                    TKey tempKey = default;
+                    TKey tempKey;
                     fixed (byte* buffer = key) {
                         BufferToKey(buffer, &tempKey);
                     }

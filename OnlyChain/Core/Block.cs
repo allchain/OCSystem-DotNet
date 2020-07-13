@@ -13,7 +13,7 @@ namespace OnlyChain.Core {
         public uint Version;
         public uint Height;
         /// <summary>
-        /// 从0开始，若没有发生跳过区块的情况，则每次自增2。
+        /// 从0开始，若没有发生跳过出块人的情况，则每次自增2。
         /// </summary>
         public uint Timestamp;
         public Hash<Size256> HashPrevBlock;
@@ -36,19 +36,24 @@ namespace OnlyChain.Core {
         /// </summary>
         public BlockState? CommitState { get; set; }
 
+        /// <summary>
+        /// 时间戳对应的UTC时间。
+        /// </summary>
         public DateTime DateTime => BlockChainTimestamp.ToDateTime(Timestamp);
 
-        public int Round {
+        public Round SmallRound {
             get {
-                if (Height == 1) return 0;
-                return (int)((Timestamp - 2) / (2 * Constants.MinProducerCount)) + 1;
+                if (Height == 1) return Round.InvalidValue;
+                long rounds = Math.DivRem(Timestamp - 2, Constants.SmallRoundSeconds, out long index) + 1;
+                return new Round(checked((int)rounds), (int)index / 2);
             }
         }
 
-        public int IndexInRound {
+        public Round BigRound {
             get {
-                if (Height == 1) return Constants.MinProducerCount - 1;
-                return (int)((Timestamp - 2) % (2 * Constants.MinProducerCount));
+                if (Height == 1) return Round.InvalidValue;
+                long rounds = Math.DivRem(Timestamp - 2, Constants.BigRoundSeconds, out long index) + 1;
+                return new Round(checked((int)rounds), (int)index / 2);
             }
         }
 
@@ -56,8 +61,7 @@ namespace OnlyChain.Core {
             get {
                 if (Height == 1) throw new InvalidOperationException();
                 BlockState state = PrecommitState ?? CommitState ?? throw new InvalidOperationException();
-                uint producerIndex = (Timestamp / 2 - 1) % (uint)Constants.MinProducerCount;
-                return state.SortedCampaignNodes[producerIndex];
+                return state.SortedCampaignNodes[SmallRound.IndexInRound];
             }
         }
 

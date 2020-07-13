@@ -2,12 +2,14 @@
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Buffers.Binary;
+using System.Runtime.InteropServices;
 using static OnlyChain.Secp256k1.Math.U256Math;
 
 namespace OnlyChain.Secp256k1.Math {
     /// <summary>
     /// 256位无符号整型
     /// </summary>
+    [StructLayout(LayoutKind.Sequential)]
     unsafe public readonly struct U256 {
         public readonly ulong v0, v1, v2, v3;
 
@@ -98,7 +100,7 @@ namespace OnlyChain.Secp256k1.Math {
 
         public override string ToString() {
             static void WriteHex(char* buffer, ulong v) {
-                ref byte t = ref System.Runtime.InteropServices.MemoryMarshal.GetReference(HexTemplate);
+                ref byte t = ref MemoryMarshal.GetReference(HexTemplate);
                 byte* p = (byte*)&v;
                 if (BitConverter.IsLittleEndian) {
                     buffer[2 * 7 + 0] = (char)Unsafe.Add(ref t, p[0] >> 4);

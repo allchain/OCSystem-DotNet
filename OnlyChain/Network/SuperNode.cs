@@ -14,6 +14,10 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace OnlyChain.Network {
+    /// <summary>
+    /// 存储竞选节点的连接信息。
+    /// <para>只能用来发送消息或响应请求。</para>
+    /// </summary>
     public sealed class SuperNode : IDisposable {
         public PublicKey PublicKey { get; }
         public IPEndPoint IPEndPoint { get; internal set; }
@@ -66,7 +70,7 @@ namespace OnlyChain.Network {
                 BinaryPrimitives.WriteInt32LittleEndian(lengthBuffer, buffer.Length);
                 ClientSocket!.NoDelay = false;
                 await stream.WriteAsync(lengthBuffer, cancellationToken);
-                ClientSocket!.NoDelay = true;
+                ClientSocket.NoDelay = true;
                 await stream.WriteAsync(buffer, cancellationToken);
             } catch { } finally {
                 ArrayPool<byte>.Shared.Return(lengthBuffer);

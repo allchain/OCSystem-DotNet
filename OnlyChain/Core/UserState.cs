@@ -5,7 +5,7 @@ using System.Collections.Generic;
 using System.Text;
 
 namespace OnlyChain.Core {
-    public struct UserStatus {
+    public struct UserState {
         /// <summary>
         /// 账户余额
         /// </summary>
@@ -39,9 +39,9 @@ namespace OnlyChain.Core {
         /// </summary>
         public ulong Votes;
         /// <summary>
-        /// 质押列表
+        /// 锁仓列表（按解锁时间戳从小到大排序）
         /// </summary>
-        public PledgeStatus[]? Pledges;
+        public LockStatus[]? Locks;
         /// <summary>
         /// 合约内存（不包含字节码和元数据）
         /// </summary>

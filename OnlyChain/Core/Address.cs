@@ -85,7 +85,7 @@ namespace OnlyChain.Core {
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static Address operator ^(Address left, Address right) {
-            Address r = default;
+            Address r;
             ((ulong*)&r)[0] = ((ulong*)&left)[0] ^ ((ulong*)&right)[0];
             ((ulong*)&r)[1] = ((ulong*)&left)[1] ^ ((ulong*)&right)[1];
             ((uint*)&r)[4] = ((uint*)&left)[4] ^ ((uint*)&right)[4];
